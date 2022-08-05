@@ -1,0 +1,140 @@
+#!/usr/bin/env -S python3 -u
+
+import os
+import shutil
+import subprocess
+import sys
+import yaml
+
+default_image = "ubuntu:latest"
+default_shell = "/usr/bin/bash"
+default_config = "/etc/dockershell.yaml"
+
+
+def check_user_image(is_interactive, home, user, user_image=default_image):
+    dockerfile = f"{home}/Dockerfile"
+    shell_image_tag = f"dockershell_{user}:latest"
+
+    if os.path.isfile(dockerfile):
+        if is_interactive:
+            try:
+                build = [
+                    "docker",
+                    "build",
+                    "-t",
+                    shell_image_tag,
+                    "-f",
+                    dockerfile,
+                    home,
+                ]
+                subprocess.check_call(args=build)
+            except Exception as e:
+                print(f"Failed to build user shell docker image: {e}")
+                pass
+
+        try:
+            test = ["docker", "inspect", "--type=image", shell_image_tag]
+            subprocess.check_call(
+                args=test, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL
+            )
+            return shell_image_tag
+        except Exception as e:
+            pass
+
+    return user_image
+
+
+def load_user_config(user):
+    if not os.path.isfile(default_config):
+        return ([], default_image, default_shell)
+
+    def safe_get_item(dict, name):
+        e = dict.get(name)
+        if e:
+            return e
+        return {}
+
+    all_conf = yaml.safe_load(open(default_config))
+    global_conf = safe_get_item(all_conf, "global")
+    user_conf = {}
+    users = safe_get_item(all_conf, "users")
+    if user in users:
+        user_conf = safe_get_item(users, user)
+
+    def get_list(name):
+        g = global_conf.get(name, []) or []
+        u = user_conf.get(name, []) or []
+        return g + u
+
+    def get_value(name, default=None):
+        return user_conf.get(name, global_conf.get(name, default))
+
+
+    def get_arg(switch, name, default=None):
+        v = get_value(name=name, default=default)
+        if v:
+            return [ f"--{switch}={v}" ]
+        return []
+
+    args = []
+    if get_value("expose_docker", False):
+        docker = shutil.which("docker")
+        args.append("--volume=/var/run/docker.sock:/var/run/docker.sock")
+        args.append(f"--volume={docker}:{docker}")
+
+    for item in get_list("volumes"):
+        args.append(f"--volume={item}")
+
+    # simple pass-through args
+    for n in ["network", "memory", "cpus"]:
+        args.extend(get_arg(n, n))
+
+    return (args, get_value("image", default_image), get_value("shell", default_shell))
+
+
+def get_std_args(is_interactive, user, home):
+    args = [
+        "--rm",
+        f"--hostname={os.uname()[1]}",
+        f"--name=dockershell_{user}_{os.getpid()}",
+        f"--volume=/etc/passwd:/etc/passwd:ro",
+        f"--volume=/etc/group:/etc/group:ro",
+        f"--volume={home}:{home}",
+        f"--workdir={home}",
+        f"--user={os.getuid()}:{os.getgid()}",
+    ]
+
+    if is_interactive:
+        args.extend(["-it", "-e", "TERM=xterm-256color"])
+
+    for g in os.getgroups():
+        if g != os.getgid():
+            args.append(f"--group-add={g}")
+
+    return args
+
+
+def gen_docker_args(argv):
+    is_interactive = len(argv) == 1
+    home = os.environ["HOME"]
+    user = os.environ["USER"]
+
+    user_args, user_image, user_shell = load_user_config(user)
+    image = check_user_image(
+        is_interactive=is_interactive, user_image=user_image, home=home, user=user
+    )
+
+    args = ["docker", "run"]
+    args.extend(user_args)
+    args.extend(get_std_args(is_interactive=is_interactive, user=user, home=home))
+    args.append(image)
+    if not is_interactive:
+        args.append(user_shell)
+        args.extend(argv[1:])
+
+    return args
+
+
+run_args = gen_docker_args(argv=sys.argv)
+# print(run_args)
+os.execvp("docker", run_args)
