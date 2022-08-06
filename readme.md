@@ -22,7 +22,7 @@ global:
   image: "ubuntu:latest"   # default image (if user does not have own Dockerfile in home)
   shell: "/usr/bin/bash"   # default shell (if not overriden by user)
   expose_docker: false     # don't expose docker host to users (False is default anyway)
-    volumes:               # Mount additional volumes for all users
+  volumes:               # Mount additional volumes for all users
     - "/mnt/storage:/mnt/storage"
   # Following configs does not have default values, so paramter is not added if not defined
   memory: 1G               # Limit memory of containers, passed to --memory argument
